@@ -49,21 +49,23 @@ def plot_history(history: list[dict], path: str | Path):
 
 
 def plot_iwll(groups: list[dict], path: str | Path):
-    """One panel per dataset/noise level, with a line for each decoder width."""
+    """One panel per dataset/noise level; separate model/curvature/width lines."""
     panels = sorted({(row["dataset"], row["noise_std"]) for row in groups})
     if not panels:
         return
     fig, axes = plt.subplots(len(panels), 1, figsize=(8, 4 * len(panels)), squeeze=False)
     for ax, (dataset, noise) in zip(axes[:, 0], panels):
         subset = [row for row in groups if row["dataset"] == dataset and row["noise_std"] == noise]
-        widths = sorted({row["decoder_width"] for row in subset})
-        for width in widths:
-            rows = sorted((row for row in subset if row["decoder_width"] == width),
+        variants = sorted({(row["model_type"], row["curvature"], row["decoder_width"])
+                           for row in subset})
+        for model_type, curvature, width in variants:
+            rows = sorted((row for row in subset if (row["model_type"], row["curvature"],
+                                                     row["decoder_width"]) == (model_type, curvature, width)),
                           key=lambda row: row["latent_dim"])
             x = [row["latent_dim"] for row in rows]
             y = [row["iwll_mean"] for row in rows]
             std = [np.nan if row["iwll_std"] is None else row["iwll_std"] for row in rows]
-            line, = ax.plot(x, y, "o-", label=f"Decoder width {width}")
+            line, = ax.plot(x, y, "o-", label=f"{model_type}, K={curvature:g}, width {width}")
             ax.errorbar(x, y, yerr=std, fmt="none", color=line.get_color(), capsize=3)
             for row in rows:
                 ax.scatter([row["latent_dim"]] * row["n_seeds"], row["iwll_values"],
@@ -101,8 +103,9 @@ def plot_decoder_surface(
     parameter = next(model.parameters())
     axis = torch.linspace(grid_min, grid_max, resolution, device=parameter.device, dtype=parameter.dtype)
     u, v = torch.meshgrid(axis, axis, indexing="ij")
-    z = torch.stack((u, v), dim=-1).reshape(-1, 2)
+    grid = torch.stack((u, v), dim=-1).reshape(-1, 2)
     with torch.no_grad():
+        z = model.latent_from_tangent(grid)
         points = model.observation(z).mean.cpu().numpy().reshape(resolution, resolution, 3)
     surface_options = {"cmap": "viridis"}
     fig = plt.figure(figsize=(7, 5))
@@ -110,8 +113,9 @@ def plot_decoder_surface(
     if color_volume:
         volumes = []
         with torch.enable_grad():
-            for latent in z:
-                jacobian = torch.autograd.functional.jacobian(lambda value: model.observation(value).mean, latent)
+            for tangent in grid:
+                jacobian = torch.autograd.functional.jacobian(
+                    lambda value: model.observation(model.latent_from_tangent(value)).mean, tangent)
                 gram = jacobian.T @ jacobian
                 volumes.append(float(torch.linalg.det(gram).clamp_min(0).sqrt()))
         volumes = np.asarray(volumes).reshape(resolution, resolution)
@@ -120,7 +124,7 @@ def plot_decoder_surface(
         fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap="viridis"), ax=ax,
                      shrink=0.6, label="Pullback volume element in grid coordinates")
     ax.plot_surface(points[:, :, 0], points[:, :, 1], points[:, :, 2], **surface_options)
-    ax.set(xlabel="x", ylabel="y", zlabel="z", title="Decoder mean on a 2D latent grid")
+    ax.set(xlabel="x", ylabel="y", zlabel="z", title="Decoder mean on a 2D origin-tangent grid")
     ax.set_box_aspect(np.maximum(np.ptp(points, axis=(0, 1)), 1e-6))
     finish(fig, path)
     model.train(was_training)

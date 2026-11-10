@@ -12,7 +12,7 @@ import torch
 import config
 from data import generate_data, load_data, save_data, split_points
 from evaluate import evaluate
-from model import VAE
+from model import build_model
 from plot import plot_decoder_surface, plot_history, plot_iwll, plot_points
 from train import train
 
@@ -28,7 +28,11 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
     if settings_path.exists():
         previous = json.loads(settings_path.read_text())
         previous["training"]["epochs"] = settings["training"]["epochs"]
-        if previous != settings:
+        # Older flat runs predate the model selector.
+        previous["model"].setdefault("type", "flat")
+        current = deepcopy(settings)
+        current["model"].setdefault("type", "flat")
+        if previous != current:
             raise ValueError("Saved settings differ. Choose another OUTPUT_DIR in config.py.")
     if (output_dir / "last.pt").exists():
         saved = torch.load(output_dir / "last.pt", map_location="cpu", weights_only=True)
@@ -42,7 +46,8 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
         save_data(data, output_dir / "data.npz")
     print(f"\n{output_dir}", flush=True)
     torch.manual_seed(settings["training"]["seed"])
-    model = VAE(**settings["model"])  # Plug in your curved model here later.
+    model_settings = dict(settings["model"])
+    model = build_model(model_settings.pop("type", "flat"), **model_settings)
     history = train(model, split_points(data, "train"), split_points(data, "val"),
                     output_dir, **settings["training"])
     best = torch.load(output_dir / "best.pt", map_location="cpu", weights_only=True)
@@ -53,6 +58,7 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
         "dataset": settings["data"]["name"], "noise_std": settings["data"]["noise_std"],
         "latent_dim": settings["model"]["latent_dim"], "decoder_width": settings["model"]["decoder_width"],
         "seed": settings["training"]["seed"], "model_type": type(model).__name__,
+        "curvature": float(model.curvature) if hasattr(model, "curvature") else 0.0,
         "best_epoch": best["epoch"], "n_parameters": sum(p.numel() for p in model.parameters()),
         **metrics,
     }
@@ -72,7 +78,7 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
 
 
 def summarize(results: list[dict], output_dir: Path) -> list[dict]:
-    keys = ("model_type", "dataset", "noise_std", "latent_dim", "decoder_width")
+    keys = ("model_type", "curvature", "dataset", "noise_std", "latent_dim", "decoder_width")
     groups = {}
     for result in results:
         key = tuple(result[name] for name in keys)
@@ -99,17 +105,24 @@ def summarize(results: list[dict], output_dir: Path) -> list[dict]:
 def main():
     output_dir = Path(config.OUTPUT_DIR)
     results = []
-    combinations = product(config.DATASETS, config.NOISE_LEVELS, config.LATENT_DIMS,
+    combinations = product(config.MODEL_TYPES, config.DATASETS, config.NOISE_LEVELS, config.LATENT_DIMS,
                            config.DECODER_WIDTHS, config.SEEDS)
-    for dataset, noise, latent_dim, width, seed in combinations:
+    for model_type, dataset, noise, latent_dim, width, seed in combinations:
+        model_settings = {**config.MODEL, "type": model_type,
+                          "latent_dim": latent_dim, "decoder_width": width}
+        if model_type == "curved":
+            model_settings.update(config.CURVED_MODEL)
         settings = {
             "data": {**config.DATA, "name": dataset, "noise_std": noise,
                      "parameters": config.SURFACES[dataset]},
-            "model": {**config.MODEL, "latent_dim": latent_dim, "decoder_width": width},
+            "model": model_settings,
             "training": {**config.TRAINING, "seed": seed},
             "evaluation": deepcopy(config.EVALUATION),
         }
         name = f"{dataset}_noise{noise:g}_z{latent_dim}_width{width}_seed{seed}"
+        # Retain existing flat experiment paths/checkpoints.
+        if model_type != "flat":
+            name = f"{model_type}_k{model_settings['curvature']:g}_{name}"
         results.append(run_experiment(settings, output_dir / name, config.COLOR_VOLUME))
     summarize(results, output_dir)
     print(f"\nResults and plots saved in {output_dir}")
