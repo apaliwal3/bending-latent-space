@@ -32,6 +32,9 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
         previous["model"].setdefault("type", "flat")
         current = deepcopy(settings)
         current["model"].setdefault("type", "flat")
+        for value in (previous, current):
+            if value["model"]["type"] == "curved":
+                value["model"].setdefault("learn_curvature", False)
         if previous != current:
             raise ValueError("Saved settings differ. Choose another OUTPUT_DIR in config.py.")
     if (output_dir / "last.pt").exists():
@@ -58,7 +61,9 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
         "dataset": settings["data"]["name"], "noise_std": settings["data"]["noise_std"],
         "latent_dim": settings["model"]["latent_dim"], "decoder_width": settings["model"]["decoder_width"],
         "seed": settings["training"]["seed"], "model_type": type(model).__name__,
-        "curvature": float(model.curvature) if hasattr(model, "curvature") else 0.0,
+        "curvature": float(model.curvature.detach()) if hasattr(model, "curvature") else 0.0,
+        "initial_curvature": settings["model"].get("curvature", 0.0),
+        "learn_curvature": settings["model"].get("learn_curvature", False),
         "best_epoch": best["epoch"], "n_parameters": sum(p.numel() for p in model.parameters()),
         **metrics,
     }
@@ -78,7 +83,8 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
 
 
 def summarize(results: list[dict], output_dir: Path) -> list[dict]:
-    keys = ("model_type", "curvature", "dataset", "noise_std", "latent_dim", "decoder_width")
+    keys = ("model_type", "initial_curvature", "learn_curvature", "dataset", "noise_std",
+            "latent_dim", "decoder_width")
     groups = {}
     for result in results:
         key = tuple(result[name] for name in keys)
@@ -87,7 +93,7 @@ def summarize(results: list[dict], output_dir: Path) -> list[dict]:
     for key, rows in groups.items():
         row = dict(zip(keys, key))
         row.update(n_seeds=len(rows), seeds=[result["seed"] for result in rows])
-        for metric in ("iwll", "elbo", "reconstruction_mse", "reconstruction_nll", "kl"):
+        for metric in ("iwll", "elbo", "reconstruction_mse", "reconstruction_nll", "kl", "curvature"):
             values = [result[metric] for result in rows]
             row[f"{metric}_values"] = values
             row[f"{metric}_mean"] = float(np.mean(values))
@@ -123,6 +129,8 @@ def main():
         # Retain existing flat experiment paths/checkpoints.
         if model_type != "flat":
             name = f"{model_type}_k{model_settings['curvature']:g}_{name}"
+            if model_settings.get("learn_curvature", False):
+                name = f"learned_{name}"
         results.append(run_experiment(settings, output_dir / name, config.COLOR_VOLUME))
     summarize(results, output_dir)
     print(f"\nResults and plots saved in {output_dir}")

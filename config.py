@@ -26,7 +26,7 @@ MODEL = {
     "encoder_width": 64,
     "observation_std": 0.1,  # Likelihood scale, separate from dataset noise.
 }
-CURVED_MODEL = {"curvature": -1.0}  # Fixed negative latent sectional curvature.
+CURVED_MODEL = {"curvature": -1.0, "learn_curvature": True}  # Initial curvature.
 TRAINING = {
     "epochs": 100,
     "batch_size": 128,
