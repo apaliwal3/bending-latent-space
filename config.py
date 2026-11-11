@@ -4,6 +4,7 @@ OUTPUT_DIR = "outputs/experiment"
 
 # Every combination runs. Add values here to compare experiments.
 DATASETS = ["sphere"]
+MODEL_TYPES = ["flat", "curved"]
 NOISE_LEVELS = [0.05]
 LATENT_DIMS = [2]
 DECODER_WIDTHS = [32]
@@ -25,6 +26,7 @@ MODEL = {
     "encoder_width": 64,
     "observation_std": 0.1,  # Likelihood scale, separate from dataset noise.
 }
+CURVED_MODEL = {"curvature": -1.0}  # Fixed negative latent sectional curvature.
 TRAINING = {
     "epochs": 100,
     "batch_size": 128,

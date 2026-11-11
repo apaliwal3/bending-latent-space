@@ -1,4 +1,4 @@
-"""ELBO training and checkpoints. A later curved model uses the same interface."""
+"""ELBO training and checkpoints for flat and curved latent models."""
 
 import json
 from pathlib import Path
