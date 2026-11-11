@@ -140,9 +140,43 @@ def check_curved_training():
                                flat.posterior(x).log_prob(euclidean), rtol=1e-6, atol=1e-7)
 
 
+def check_learned_curvature():
+    torch.manual_seed(71)
+    model = CurvedVAE(encoder_width=8, decoder_width=8, learn_curvature=True).double()
+    torch.testing.assert_close(model.curvature, torch.tensor(-1.0, dtype=torch.float64))
+    x = torch.randn(8, 3, dtype=torch.float64)
+    # Common random samples make finite differences check the pathwise gradient.
+    def objective():
+        torch.manual_seed(72)
+        return elbo_loss(model, x)
+    objective().backward()
+    gradient = model.raw_curvature.grad.clone()
+    assert torch.isfinite(gradient) and gradient.abs() > 1e-8
+    original = model.raw_curvature.detach().clone()
+    with torch.no_grad():
+        model.raw_curvature.copy_(original + 1e-5)
+        plus = objective()
+        model.raw_curvature.copy_(original - 1e-5)
+        minus = objective()
+        model.raw_curvature.copy_(original)
+    torch.testing.assert_close(gradient, (plus - minus) / 2e-5, rtol=1e-4, atol=1e-6)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer.step()
+    assert model.curvature < 0 and not torch.equal(original, model.raw_curvature)
+    restored = CurvedVAE(encoder_width=8, decoder_width=8, learn_curvature=True).double()
+    restored.load_state_dict(model.state_dict())
+    torch.testing.assert_close(restored.curvature, model.curvature)
+    # Fixed-curvature checkpoints from the original implementation still load.
+    fixed = CurvedVAE(curvature=-0.5)
+    legacy = fixed.state_dict()
+    legacy["curvature"] = legacy.pop("_fixed_curvature")
+    fixed.load_state_dict(legacy)
+
+
 if __name__ == "__main__":
     check_data()
     check_likelihood()
     check_curved_geometry()
     check_curved_training()
+    check_learned_curvature()
     print("Data, likelihood, curved geometry and training checks passed.")

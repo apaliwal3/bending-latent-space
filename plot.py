@@ -56,16 +56,18 @@ def plot_iwll(groups: list[dict], path: str | Path):
     fig, axes = plt.subplots(len(panels), 1, figsize=(8, 4 * len(panels)), squeeze=False)
     for ax, (dataset, noise) in zip(axes[:, 0], panels):
         subset = [row for row in groups if row["dataset"] == dataset and row["noise_std"] == noise]
-        variants = sorted({(row["model_type"], row["curvature"], row["decoder_width"])
+        variants = sorted({(row["model_type"], row["initial_curvature"], row["learn_curvature"], row["decoder_width"])
                            for row in subset})
-        for model_type, curvature, width in variants:
-            rows = sorted((row for row in subset if (row["model_type"], row["curvature"],
-                                                     row["decoder_width"]) == (model_type, curvature, width)),
+        for model_type, curvature, learned, width in variants:
+            rows = sorted((row for row in subset if (row["model_type"], row["initial_curvature"],
+                                                     row["learn_curvature"], row["decoder_width"])
+                           == (model_type, curvature, learned, width)),
                           key=lambda row: row["latent_dim"])
             x = [row["latent_dim"] for row in rows]
             y = [row["iwll_mean"] for row in rows]
             std = [np.nan if row["iwll_std"] is None else row["iwll_std"] for row in rows]
-            line, = ax.plot(x, y, "o-", label=f"{model_type}, K={curvature:g}, width {width}")
+            label = f"learned K (initial {curvature:g})" if learned else f"K={curvature:g}"
+            line, = ax.plot(x, y, "o-", label=f"{model_type}, {label}, width {width}")
             ax.errorbar(x, y, yerr=std, fmt="none", color=line.get_color(), capsize=3)
             for row in rows:
                 ax.scatter([row["latent_dim"]] * row["n_seeds"], row["iwll_values"],

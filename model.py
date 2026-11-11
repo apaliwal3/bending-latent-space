@@ -150,21 +150,43 @@ class VAE(nn.Module):
 
 
 class CurvedVAE(VAE):
-    """Hyperbolic VAE with fixed negative sectional curvature.
+    """Hyperbolic VAE with fixed or learned negative sectional curvature.
 
     latent_dim is the intrinsic dimension; samples have latent_dim + 1 Lorentz
     coordinates. The decoder uses the logarithmic map at the origin, keeping
-    the same network architecture and parameter count as the flat baseline.
+    the same network architecture as the flat baseline.
     """
 
     def __init__(
         self, latent_dim: int = 2, encoder_width: int = 64, decoder_width: int = 32,
         observation_std: float = 0.1, curvature: float = -1.0,
+        learn_curvature: bool = False,
     ):
         if not math.isfinite(curvature) or curvature >= 0:
             raise ValueError("curvature must be finite and negative; use VAE for flat space")
         super().__init__(latent_dim, encoder_width, decoder_width, observation_std)
-        self.register_buffer("curvature", torch.tensor(float(curvature)))
+        self.learn_curvature = learn_curvature
+        if learn_curvature:
+            magnitude = -curvature - 1e-6
+            if magnitude <= 0:
+                raise ValueError("learned curvature must start below -1e-6")
+            raw = magnitude + math.log(-math.expm1(-magnitude))
+            self.raw_curvature = nn.Parameter(torch.tensor(raw))
+        else:
+            self.register_buffer("_fixed_curvature", torch.tensor(float(curvature)))
+
+    @property
+    def curvature(self) -> torch.Tensor:
+        if self.learn_curvature:
+            return -(torch.nn.functional.softplus(self.raw_curvature) + 1e-6)
+        return self._fixed_curvature
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Preserve checkpoints made before curvature became configurable.
+        old_key = prefix + "curvature"
+        if not self.learn_curvature and old_key in state_dict:
+            state_dict[prefix + "_fixed_curvature"] = state_dict.pop(old_key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _geometry_dtype(self) -> torch.dtype:
         # Lorentz products subtract large terms. MPS does not support float64.

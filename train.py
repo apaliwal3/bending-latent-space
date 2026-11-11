@@ -77,6 +77,8 @@ def train(
         train_loss /= len(train_points)
         val_loss /= len(val_points)
         history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        if hasattr(model, "curvature"):
+            history[-1]["curvature"] = float(model.curvature.detach())
         improved = val_loss < best_loss
         best_loss = min(best_loss, val_loss)
         saved = {
