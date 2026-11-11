@@ -4,7 +4,7 @@ OUTPUT_DIR = "outputs/experiment"
 
 # Every combination runs. Add values here to compare experiments.
 DATASETS = ["sphere"]
-MODEL_TYPES = ["flat", "curved"]
+MODEL_TYPES = ["flat", "universal"]
 NOISE_LEVELS = [0.05]
 LATENT_DIMS = [2]
 DECODER_WIDTHS = [32]
@@ -27,6 +27,7 @@ MODEL = {
     "observation_std": 0.1,  # Likelihood scale, separate from dataset noise.
 }
 CURVED_MODEL = {"curvature": -1.0, "learn_curvature": True}  # Initial curvature.
+UNIVERSAL_MODEL = {"curvature": 0.0, "learn_curvature": True}  # Can cross zero.
 TRAINING = {
     "epochs": 100,
     "batch_size": 128,

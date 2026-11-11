@@ -6,6 +6,8 @@ import torch
 from torch import nn
 from torch.distributions import Distribution, Independent, Normal
 
+from geometry import StereographicNormal, log_at_origin, radial_map
+
 
 def lorentz_inner(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Minkowski inner product, with the time coordinate first."""
@@ -211,9 +213,50 @@ class CurvedVAE(VAE):
         return exp_map_zero(tangent.to(self._geometry_dtype()), self.curvature)
 
 
+class UniversalVAE(CurvedVAE):
+    """One global signed curvature: negative, exactly zero, or positive.
+
+    Uses intrinsic stereographic coordinates and a bijective Gaussian
+    pushforward family, rather than the Lorentz wrapped-normal baseline.
+    """
+
+    def __init__(self, latent_dim=2, encoder_width=64, decoder_width=32,
+                 observation_std=0.1, curvature=0.0, learn_curvature=True):
+        if not math.isfinite(curvature):
+            raise ValueError("curvature must be finite")
+        VAE.__init__(self, latent_dim, encoder_width, decoder_width, observation_std)
+        self.learn_curvature = learn_curvature
+        if learn_curvature:
+            self.raw_curvature = nn.Parameter(torch.tensor(float(curvature)))
+        else:
+            self.register_buffer("_fixed_curvature", torch.tensor(float(curvature)))
+
+    @property
+    def curvature(self):
+        return self.raw_curvature if self.learn_curvature else self._fixed_curvature
+
+    def posterior(self, x):
+        location, log_variance = self.encoder(x).to(self._geometry_dtype()).chunk(2, dim=-1)
+        return StereographicNormal(self.latent_from_tangent(location),
+                                   (0.5 * log_variance.clamp(-10, 2)).exp(), self.curvature)
+
+    def prior(self):
+        location = self.prior_location.to(self._geometry_dtype())
+        return StereographicNormal(location, torch.ones_like(location), self.curvature)
+
+    def observation(self, z):
+        tangent = log_at_origin(z.to(self._geometry_dtype()), self.curvature)
+        return VAE.observation(self, tangent.to(next(self.decoder.parameters()).dtype))
+
+    def latent_from_tangent(self, tangent):
+        return radial_map(tangent.to(self._geometry_dtype()), self.curvature)
+
+
 def build_model(model_type: str = "flat", **settings) -> VAE:
     if model_type == "flat":
         return VAE(**settings)
     if model_type == "curved":
         return CurvedVAE(**settings)
-    raise ValueError(f"unknown model type: {model_type}; expected 'flat' or 'curved'")
+    if model_type == "universal":
+        return UniversalVAE(**settings)
+    raise ValueError(f"unknown model type: {model_type}; expected 'flat', 'curved' or 'universal'")

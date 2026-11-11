@@ -12,6 +12,7 @@ from data import generate_data
 from evaluate import importance_log_likelihood
 from model import CurvedVAE, VAE, WrappedNormal, exp_map_zero, log_map_zero, lorentz_inner
 from train import elbo_loss
+from check_universal import check_universal
 
 
 def check_data():
@@ -179,4 +180,5 @@ if __name__ == "__main__":
     check_curved_geometry()
     check_curved_training()
     check_learned_curvature()
-    print("Data, likelihood, curved geometry and training checks passed.")
+    check_universal()
+    print("Data, likelihood, geometry, signed curvature and training checks passed.")

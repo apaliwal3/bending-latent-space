@@ -118,6 +118,8 @@ def main():
                           "latent_dim": latent_dim, "decoder_width": width}
         if model_type == "curved":
             model_settings.update(config.CURVED_MODEL)
+        elif model_type == "universal":
+            model_settings.update(config.UNIVERSAL_MODEL)
         settings = {
             "data": {**config.DATA, "name": dataset, "noise_std": noise,
                      "parameters": config.SURFACES[dataset]},

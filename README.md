@@ -9,86 +9,104 @@ uv sync
 uv run python run.py
 ```
 
-The lists at the top of `config.py` control model types, datasets, noise, latent
-dimensions, decoder widths and seeds. Every combination runs. The default compares
-one flat VAE and one curved VAE on the same sphere data and splits.
+Every combination of model types, datasets, noise, latent dimensions, decoder
+widths and seeds runs. The default compares a flat VAE with a model that learns
+one global signed sectional curvature, starting at exactly zero:
 
 ```python
-MODEL_TYPES = ["flat", "curved"]  # Use either entry alone to run one model.
-CURVED_MODEL = {"curvature": -1.0, "learn_curvature": True}
+MODEL_TYPES = ["flat", "universal"]
+UNIVERSAL_MODEL = {"curvature": 0.0, "learn_curvature": True}
 ```
 
-`VAE` uses a Euclidean diagonal-Gaussian posterior and standard-normal prior.
-`CurvedVAE` uses a hyperbolic latent space with fixed or learned negative sectional curvature
-`K`. For `latent_dim=d`, its latent samples contain `d+1` Lorentz coordinates on
-the upper hyperboloid, with Minkowski norm squared `1/K`. Encoder widths,
-decoder widths match the flat baseline. Learning curvature adds one scalar parameter.
+`UniversalVAE` learns `K` directly as an unconstrained scalar parameter. Negative
+values mean hyperbolic geometry, zero means Euclidean geometry, and positive
+values mean spherical geometry. Gradients exist at zero and can move curvature
+in either direction. Set `learn_curvature=False` to fix any finite signed value.
+Exact zero is supported, but optimization does not automatically round a small
+learned value to zero. This is a single constant-curvature space, not a model of
+spatially varying curvature or a product of different geometries.
 
-The curved prior and posterior use the
-[wrapped normal of Nagano et al. (2019)](https://proceedings.mlr.press/v97/nagano19a.html).
-Sampling draws a diagonal Gaussian at the origin tangent space, parallel transports
-it to the encoded location, and applies the exponential map. `log_prob` inverts
-these maps and subtracts the exponential-map log volume:
+```python
+from model import UniversalVAE
+
+model = UniversalVAE(latent_dim=2, curvature=0.0, learn_curvature=True)
+# posterior(x), prior(), observation(z), latent_from_tangent(v)
+```
+
+The signed model uses `d` stereographic coordinates for intrinsic dimension `d`.
+The metric is `g(z) = (1 + K * ||z||^2 / 4)^(-2) I`. For negative curvature the
+chart is a ball of radius `2/sqrt(-K)`; at zero it is Euclidean space; for positive
+curvature it represents a sphere of radius `1/sqrt(K)` with one pole omitted.
+Stereographic geometry avoids divergent Lorentz coordinates at zero; see
+[Mixed-curvature Variational Autoencoders](https://arxiv.org/abs/1911.08411)
+for the geometric framework. The distribution below is our explicit bijective
+Gaussian pushforward, not that paper's exponential-map wrapped distribution.
+
+For a Gaussian vector `v` with `r = ||v||`, define the radial chart transform:
 
 ```text
-(d - 1) * log(sinh(sqrt(-K) * r) / (sqrt(-K) * r))
+K < 0: F_K(v) = 2v / (1 + sqrt(1 - K*r^2))
+K >= 0: F_K(v) = (1 + K*r^2/4) * v
 ```
 
-Here `r` is the tangent vector's geodesic length. Both latent densities use
-Riemannian volume, so sampled KL, ELBO and IWLL use the same reference measure.
-The decoder maps samples back to origin tangent coordinates before its MLP and
-retains the Gaussian observation likelihood in 3D. This gives a curved latent
-distribution while keeping the decoder architecture comparable.
+Each branch is one-to-one onto the entire chart domain. Their values and first
+curvature derivatives agree at zero (the family is C1 there). The posterior
+translates `F_K(v)` to the encoded center with a Möbius isometry. The prior uses
+the origin center and unit Gaussian scale. `log_prob` includes both the radial
+Jacobian and Riemannian volume correction. The spherical prior is not uniform.
+This construction avoids ambiguous spherical exponential-map inverses and
+omitted winding contributions, while keeping normalized densities and full
+manifold support up to sets of zero volume. At zero it recovers a Gaussian VAE.
 
-With `learn_curvature=True`, `curvature` is the initial value. The model learns
-one global scalar via `K = -(softplus(raw_curvature) + 1e-6)`. Adam automatically
-includes this parameter through `model.parameters()`; gradients flow through
-sampling, geometry maps, and both latent densities. Set `learn_curvature=False`
-for fixed curvature (also the constructor default). Learned runs require an
-initial curvature below `-1e-6`. This implementation covers negative
-curvature; it does not implement spherical or spatially varying latent curvature.
-The sphere dataset can still be used, but its positive surface curvature is not
-the model's latent curvature. In one intrinsic dimension there is no sectional
-curvature comparison. The curved encoder clamps tangent log variance to `[-10, 2]`
-for numerical stability. Geometry uses float64 on CPU/CUDA and float32 on MPS;
-large hyperbolic distances can lose precision, especially on MPS.
+The decoder uses the geodesic logarithm at the origin followed by the same MLP
+and Gaussian 3D likelihood as the baseline. Positive-curvature charts and the
+origin logarithm have pole/antipode singularities; the omitted points have zero
+probability, but nearby points can still cause numerical conditioning problems.
+Geometry uses float64 on CPU/CUDA and float32 on MPS. Large coordinate values or
+points near the hyperbolic boundary also lose precision. Encoder log variance
+is clamped to `[-10, 2]`. GPU execution has not been verified.
 
-You can also construct either model directly:
+The original models remain available:
 
-```python
-from model import CurvedVAE, VAE
+- `"flat"`: `VAE`, Euclidean diagonal Gaussian prior/posterior.
+- `"curved"`: `CurvedVAE`, negative-only Lorentz wrapped normals with
+  `CURVED_MODEL` settings; learnable curvature stays negative. This follows
+  [Nagano et al. (2019)](https://proceedings.mlr.press/v97/nagano19a.html).
+- `"universal"`: `UniversalVAE`, signed curvature with `UNIVERSAL_MODEL` settings.
 
-flat = VAE(latent_dim=2)
-curved = CurvedVAE(latent_dim=2, curvature=-1.0, learn_curvature=True)
-# Both expose posterior(x), prior(), observation(z), and latent_from_tangent(v).
-```
+Switching from `curved` to `universal` changes the distribution family and latent
+representation. Their checkpoints are separate and cannot be interchanged.
+Learning adds one scalar parameter to the otherwise matched encoder/decoder
+architectures. Learned latent curvature is not automatically a recovery of the
+observed data surface's Gaussian curvature. In intrinsic dimension one there is
+no sectional curvature to compare.
 
-- `data.py`: generate 3D points, fixed splits and ground-truth surface curvature.
-- `model.py`: flat VAE, hyperbolic maps, wrapped normal and curved VAE.
-- `train.py`: shared ELBO training and checkpoint saving/loading.
+- `data.py`: reproducible 3D data, splits and ground-truth surface curvature.
+- `geometry.py`: signed stereographic geometry and normalized distributions.
+- `model.py`: model definitions and the original Lorentz geometry.
+- `train.py`: shared ELBO training, checkpoints and per-epoch curvature history.
 - `evaluate.py`: held-out IWLL and reconstruction metrics.
 - `plot.py`: loss curves, point clouds, seed comparisons and decoder surfaces.
-- `run.py`: run experiments and save results/plots in `outputs/experiment/`.
+- `run.py`: experiments and results/plots in `outputs/experiment/`.
 
 Rerunning resumes saved training; increase `TRAINING["epochs"]` to train longer.
-For other changes to fixed settings, choose a new `OUTPUT_DIR`. Existing flat
-experiment directories remain compatible; curved directories include their model
-type and initial curvature; learned runs have a `learned_` prefix, keeping them
-separate from existing fixed runs. Curvature is saved each epoch in `history.json`.
-`results.json` reports the curvature from the best validation checkpoint.
-`summary.json` groups seeds by model, initial curvature, learning mode, dataset,
-noise, latent dimension and decoder width, and reports learned curvature values,
-means and standard deviations. IWLL plots distinguish fixed and learned models.
-Learning latent curvature does not establish recovery of data-surface curvature.
-Decoder surfaces use an origin-tangent grid; optional volume coloring measures
-the full decoder map in those grid coordinates, not intrinsic latent volume.
+For other changes to fixed settings, choose a new `OUTPUT_DIR`. Experiment paths
+include model type and initial curvature; learned runs have a `learned_` prefix.
+`history.json` records curvature each epoch; `results.json` reports it from the
+best validation checkpoint. `summary.json` groups seeds by model, initial
+curvature, learning mode, dataset, noise, latent dimension and decoder width,
+and reports curvature values, means and standard deviations. IWLL plots keep
+model families separate. Decoder surfaces map an origin-coordinate grid through
+the model's `latent_from_tangent`; volume coloring measures the full decoder map
+in those grid coordinates, not intrinsic latent volume.
 
-Run the correctness checks with:
+Run correctness checks with:
 
 ```bash
 uv run python check.py
 ```
 
-These check data reproducibility, exact linear-Gaussian IWLL, manifold constraints,
-the wrapping Jacobian/density, gradients at the origin, the flat-curvature limit,
-curved training/evaluation, curvature gradients, updates and checkpoint restoration.
+Checks cover data reproducibility, exact linear-Gaussian IWLL, original Lorentz
+geometry, signed-map inverses and Jacobians, independent numerical density
+normalization, the exact flat case, finite-difference curvature gradients at and
+around zero, optimizer sign crossing in both directions and checkpoint restoration.
