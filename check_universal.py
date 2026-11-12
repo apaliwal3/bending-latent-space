@@ -10,7 +10,30 @@ from model import UniversalVAE, VAE
 from train import elbo_loss
 
 
+def check_mobius_near_pole():
+    # The expanded denominator loses every significant digit in these cases.
+    for dtype, delta, tolerance in ((torch.float32, 1e-4, 2e-3),
+                                     (torch.float64, 1e-8, 1e-7)):
+        for dimension in (1, 2, 4):
+            x = torch.zeros(dimension, dtype=dtype)
+            x[0] = 1
+            y = x * (1 + delta)
+            expected = torch.zeros_like(x)
+            expected[0] = (1 + y[0]) / (1 - y[0])
+            actual = mobius_add(x, y, torch.tensor(4., dtype=dtype))
+            torch.testing.assert_close(actual, expected, rtol=tolerance, atol=0)
+        # Independent complex division covers non-collinear 2D inputs, too.
+        x = torch.tensor([1., 0.], dtype=dtype)
+        y = torch.tensor([1 + delta, delta], dtype=dtype)
+        reference = (complex(*x.tolist()) + complex(*y.tolist())) / (
+            1 - complex(*x.tolist()).conjugate() * complex(*y.tolist()))
+        expected = torch.tensor([reference.real, reference.imag], dtype=dtype)
+        torch.testing.assert_close(mobius_add(x, y, torch.tensor(4., dtype=dtype)),
+                                   expected, rtol=tolerance, atol=0)
+
+
 def check_universal():
+    check_mobius_near_pole()
     dtype = torch.float64
     for dimension in (1, 2, 4):
         for k in (-1.0, -1e-6, 0.0, 1e-6, 1.0):

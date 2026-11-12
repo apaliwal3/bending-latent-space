@@ -12,12 +12,14 @@ from torch.distributions import Distribution, Independent, Normal
 
 def mobius_add(x, y, curvature):
     k = curvature / 4
-    x2 = x.square().sum(-1, keepdim=True)
-    y2 = y.square().sum(-1, keepdim=True)
-    xy = (x * y).sum(-1, keepdim=True)
-    numerator = (1 - 2 * k * xy - k * y2) * x + (1 + k * x2) * y
-    denominator = 1 - 2 * k * xy + k.square() * x2 * y2
-    return numerator / denominator.clamp_min(torch.finfo(x.dtype).tiny)
+    a = 1 - k * (x * y).sum(-1, keepdim=True)
+    # Sum-of-squares form avoids cancellation near a spherical chart pole.
+    # W_ij = x_i*y_j - y_i*x_j; ||W||_F^2 / 2 = ||x wedge y||^2.
+    wedge = k * (x.unsqueeze(-1) * y.unsqueeze(-2) - y.unsqueeze(-1) * x.unsqueeze(-2))
+    numerator = a * (x + y) - (wedge * (x + y).unsqueeze(-2)).sum(-1)
+    denominator = a.square() + wedge.square().sum((-2, -1)).unsqueeze(-1) / 2
+    # The exact pole remains undefined; do not hide it with a tiny denominator.
+    return numerator / denominator
 
 
 def radial_map(vector, curvature):

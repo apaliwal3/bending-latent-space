@@ -85,7 +85,7 @@ no sectional curvature to compare.
 - `geometry.py`: signed stereographic geometry and normalized distributions.
 - `model.py`: model definitions and the original Lorentz geometry.
 - `train.py`: shared ELBO training, checkpoints and per-epoch curvature history.
-- `evaluate.py`: held-out IWLL and reconstruction metrics.
+- `evaluate.py`: held-out likelihood and reconstruction metrics.
 - `plot.py`: loss curves, point clouds, seed comparisons and decoder surfaces.
 - `run.py`: experiments and results/plots in `outputs/experiment/`.
 
@@ -95,10 +95,19 @@ include model type and initial curvature; learned runs have a `learned_` prefix.
 `history.json` records curvature each epoch; `results.json` reports it from the
 best validation checkpoint. `summary.json` groups seeds by model, initial
 curvature, learning mode, dataset, noise, latent dimension and decoder width,
-and reports curvature values, means and standard deviations. IWLL plots keep
+and reports curvature values, means and standard deviations. Likelihood plots keep
 model families separate. Decoder surfaces map an origin-coordinate grid through
 the model's `latent_from_tangent`; volume coloring measures the full decoder map
 in those grid coordinates, not intrinsic latent volume.
+
+Likelihood comparisons use `log_likelihood`. For 2D models this integrates over
+the prior on CPU, checks a doubled grid, and bounds omitted prior tails. An
+unresolved integral raises an error. Other dimensions use an importance estimate
+mixing posterior and prior samples; these have `likelihood_checked=False` and
+are marked with crosses in plots. `iwll` and effective sample sizes are also
+saved. Low effective sample size or disagreement with integration produces a
+warning. More samples or a high effective sample size alone do not establish
+accuracy; higher-dimensional rankings still need independent validation.
 
 Run correctness checks with:
 

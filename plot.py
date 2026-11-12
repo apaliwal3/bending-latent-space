@@ -49,7 +49,7 @@ def plot_history(history: list[dict], path: str | Path):
 
 
 def plot_iwll(groups: list[dict], path: str | Path):
-    """One panel per dataset/noise level; separate model/curvature/width lines."""
+    """Likelihood comparison; mark estimates that have no integration check."""
     panels = sorted({(row["dataset"], row["noise_std"]) for row in groups})
     if not panels:
         return
@@ -64,18 +64,25 @@ def plot_iwll(groups: list[dict], path: str | Path):
                            == (model_type, curvature, learned, width)),
                           key=lambda row: row["latent_dim"])
             x = [row["latent_dim"] for row in rows]
-            y = [row["iwll_mean"] for row in rows]
-            std = [np.nan if row["iwll_std"] is None else row["iwll_std"] for row in rows]
+            metric = "log_likelihood" if all("log_likelihood_mean" in row for row in rows) else "iwll"
+            y = [row[f"{metric}_mean"] for row in rows]
+            std = [np.nan if row[f"{metric}_std"] is None else row[f"{metric}_std"] for row in rows]
             label = f"learned K (initial {curvature:g})" if learned else f"K={curvature:g}"
-            line, = ax.plot(x, y, "o-", label=f"{model_type}, {label}, width {width}")
+            line, = ax.plot(x, y, "-", label=f"{model_type}, {label}, width {width}")
             ax.errorbar(x, y, yerr=std, fmt="none", color=line.get_color(), capsize=3)
             for row in rows:
-                ax.scatter([row["latent_dim"]] * row["n_seeds"], row["iwll_values"],
-                           color=line.get_color(), alpha=0.4, s=16)
+                checked = row.get("likelihood_checked", False)
+                ax.scatter(row["latent_dim"], row[f"{metric}_mean"], color=line.get_color(),
+                           marker="o" if checked else "x")
+                ax.scatter([row["latent_dim"]] * row["n_seeds"], row[f"{metric}_values"],
+                           color=line.get_color(), alpha=0.4, s=16,
+                           marker="o" if checked else "x")
         ax.set(title=f"{dataset}, noise std={noise}", xlabel="Latent dimension",
-               ylabel="Test IWLL (nats/point; higher is better)")
+               ylabel="Test log likelihood (nats/point; higher is better)")
         ax.set_xticks(sorted({row["latent_dim"] for row in subset}))
         ax.legend(fontsize="small")
+        ax.text(.01, .01, "x: importance estimate without a direct integration check",
+                transform=ax.transAxes, fontsize="x-small")
     finish(fig, path)
 
 

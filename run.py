@@ -78,13 +78,14 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
     plot_history(history, output_dir / "loss.png")
     if model.latent_dim == 2:
         plot_decoder_surface(model, output_dir / "decoder_surface.png", color_volume=color_volume)
-    print(f"Test IWLL: {metrics['iwll']:.3f} nats/point", flush=True)
+    method = metrics["likelihood_method"]
+    print(f"Test log likelihood ({method}): {metrics['log_likelihood']:.3f} nats/point", flush=True)
     return result
 
 
 def summarize(results: list[dict], output_dir: Path) -> list[dict]:
     keys = ("model_type", "initial_curvature", "learn_curvature", "dataset", "noise_std",
-            "latent_dim", "decoder_width")
+            "latent_dim", "decoder_width", "likelihood_method", "likelihood_checked")
     groups = {}
     for result in results:
         key = tuple(result[name] for name in keys)
@@ -93,7 +94,7 @@ def summarize(results: list[dict], output_dir: Path) -> list[dict]:
     for key, rows in groups.items():
         row = dict(zip(keys, key))
         row.update(n_seeds=len(rows), seeds=[result["seed"] for result in rows])
-        for metric in ("iwll", "elbo", "reconstruction_mse", "reconstruction_nll", "kl", "curvature"):
+        for metric in ("log_likelihood", "iwll", "elbo", "reconstruction_mse", "reconstruction_nll", "kl", "curvature"):
             values = [result[metric] for result in rows]
             row[f"{metric}_values"] = values
             row[f"{metric}_mean"] = float(np.mean(values))
