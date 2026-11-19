@@ -253,10 +253,15 @@ class UniversalVAE(CurvedVAE):
 
 
 def build_model(model_type: str = "flat", **settings) -> VAE:
+    if model_type in ("paper_flat", "mixed", "paper_universal"):
+        from mixed import MixedCurvatureVAE, PaperFlatVAE
+        if model_type == "paper_flat":
+            return PaperFlatVAE(**settings)
+        return MixedCurvatureVAE(mode="universal" if model_type == "paper_universal" else "mixed", **settings)
     if model_type == "flat":
         return VAE(**settings)
     if model_type == "curved":
         return CurvedVAE(**settings)
     if model_type == "universal":
         return UniversalVAE(**settings)
-    raise ValueError(f"unknown model type: {model_type}; expected 'flat', 'curved' or 'universal'")
+    raise ValueError(f"unknown model type: {model_type}")

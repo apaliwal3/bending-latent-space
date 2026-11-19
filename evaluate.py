@@ -107,6 +107,7 @@ def evaluate(
     model.eval()
     iwll, importance_ess, sampled_elbo, mse = [], [], [], []
     reconstruction_nll, kl = [], []
+    factor_kl, latent_locations, latent_scales = [], [], []
     if batch_size < 1 or len(points) < 1:
         raise ValueError("evaluation requires a positive batch size and nonempty points")
     for start in range(0, len(points), batch_size):
@@ -119,6 +120,10 @@ def evaluate(
         observation = model.observation(z)
         nll = -observation.log_prob(x)
         kl_sample = q.log_prob(z) - model.prior().log_prob(z)
+        if hasattr(q, "factor_log_prob"):
+            factor_kl.append((q.factor_log_prob(z) - model.prior().factor_log_prob(z)).cpu().numpy())
+            latent_locations.append(q.location.cpu().numpy())
+            latent_scales.append(q.scale.cpu().numpy())
         # Sampled latent, observation mean: works without a manifold posterior mean.
         mse.append((observation.mean - x).square().mean(dim=-1).cpu().numpy())
         reconstruction_nll.append(nll.cpu().numpy())
@@ -133,6 +138,13 @@ def evaluate(
         "kl": np.concatenate(kl),
     }
     metrics = {name: float(values.mean()) for name, values in per_point.items()}
+    if factor_kl:
+        per_point["factor_kl"] = np.concatenate(factor_kl)
+        per_point["latent_location"] = np.concatenate(latent_locations)
+        per_point["latent_scale"] = np.concatenate(latent_scales)
+        metrics["factor_kl"] = per_point["factor_kl"].mean(axis=0).tolist()
+    else:
+        metrics["factor_kl"] = [metrics["kl"]]
     metrics.update({
         "n_points": len(points),
         "importance_samples": importance_samples,

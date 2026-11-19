@@ -1,6 +1,7 @@
 # Bending latent space
 
-Compare flat and curved VAE latent spaces on noisy sphere, Swiss roll and saddle data.
+Compare flat, constant-curvature and mixed-curvature product VAE latent spaces
+on noisy sphere, Swiss roll and saddle data.
 
 Edit **`config.py`**, then run:
 
@@ -9,12 +10,60 @@ uv sync
 uv run python run.py
 ```
 
-Every combination of model types, datasets, noise, latent dimensions, decoder
-widths and seeds runs. The default compares a flat VAE with a model that learns
-one global signed sectional curvature, starting at exactly zero:
+Every combination of model types, datasets, noise, total latent dimensions,
+decoder widths and seeds runs. Defaults now compare the diagonal wrapped-normal
+product model from [Mixed-curvature Variational Autoencoders (ICLR 2020)](https://arxiv.org/abs/1911.08411)
+against a matched flat control:
+
+```python
+MODEL_TYPES = ["paper_flat", "mixed", "paper_universal"]
+LATENT_DIMS = [6]
+```
+
+- `paper_flat`: 6D Euclidean VAE with the same network and posterior scale
+  parameterization as the paper models.
+- `mixed`: 2D hyperbolic x 2D spherical x 2D Euclidean factors. Each curved
+  factor has its own radius, optionally learned with SGD. Set
+  `MIXED_MODEL["learn_curvature"] = False` for a fixed-curvature control.
+- `paper_universal`: three initially flat 2D factors. Train flat for 50 epochs,
+  perturb the factors to negative/positive/zero curvature, stabilize for five
+  epochs, then learn the two non-Euclidean signed curvatures. Either can cross
+  zero; the assigned Euclidean factor stays flat.
+
+`latent_dim` always denotes the **total intrinsic dimension**, so baselines and
+products are compared at the same dimension. `factor_dims=None` partitions it
+into 2D factors, using one 3D factor for an odd total. For a two-factor 4D model:
+
+```python
+LATENT_DIMS = [4]
+MIXED_MODEL = {
+    "factor_dims": [2, 2],
+    "factor_types": ["h", "s"],
+    "curvatures": [-1., 1.],
+    "learn_curvature": True,
+}
+```
+
+The new implementation uses Gaussian tangent samples, parallel transport and
+the geodesic exponential, rather than the original custom radial distribution.
+For spherical factors it includes winding contributions with a checked tail
+bound. This corrects the reference implementation's single inverse branch.
+The networks and likelihood are adapted to this project's 3D data; this is not
+a reproduction of the paper's image benchmark results. See [PAPER_MODEL.md](PAPER_MODEL.md)
+for equations, paper correspondence, analysis outputs and explicit differences.
+
+Results are saved under `outputs/paper_mixed/`. Each product run saves
+`curvatures.png`, `factor_slices.png`, per-factor KL contributions, posterior
+locations/scales and the usual likelihood/reconstruction metrics. Curvatures
+are reported as vectors, not as a single product curvature. Use multiple
+`SEEDS` for comparisons; the default one-seed run is a demonstration. Likelihood
+estimates above total dimension two remain marked `likelihood_checked=False`.
+
+The original single-factor signed model remains available with:
 
 ```python
 MODEL_TYPES = ["flat", "universal"]
+LATENT_DIMS = [2]
 UNIVERSAL_MODEL = {"curvature": 0.0, "learn_curvature": True}
 ```
 
@@ -83,11 +132,13 @@ no sectional curvature to compare.
 
 - `data.py`: reproducible 3D data, splits and ground-truth surface curvature.
 - `geometry.py`: signed stereographic geometry and normalized distributions.
+- `paper_geometry.py`: exponential-map wrapped normals and product distributions.
+- `mixed.py`: matched paper baseline, mixed products and universal schedule.
 - `model.py`: model definitions and the original Lorentz geometry.
 - `train.py`: shared ELBO training, checkpoints and per-epoch curvature history.
 - `evaluate.py`: held-out likelihood and reconstruction metrics.
 - `plot.py`: loss curves, point clouds, seed comparisons and decoder surfaces.
-- `run.py`: experiments and results/plots in `outputs/experiment/`.
+- `run.py`: experiments and results/plots under the configured `OUTPUT_DIR`.
 
 Rerunning resumes saved training; increase `TRAINING["epochs"]` to train longer.
 For other changes to fixed settings, choose a new `OUTPUT_DIR`. Experiment paths
@@ -113,9 +164,15 @@ Run correctness checks with:
 
 ```bash
 uv run python check.py
+# Only the paper extension:
+uv run python check_paper.py
 ```
 
 Checks cover data reproducibility, exact linear-Gaussian IWLL, original Lorentz
 geometry, signed-map inverses and Jacobians, independent numerical density
 normalization, the exact flat case, finite-difference curvature gradients at and
 around zero, optimizer sign crossing in both directions and checkpoint restoration.
+The paper extension additionally checks ambient-space agreement, product-map
+Jacobians, independent wrapped-density normalization including spherical winding,
+curvature gradients/sign crossing, the matched flat limit, stage transitions,
+exact optimizer/RNG resume and two-seed end-to-end experiment reporting.

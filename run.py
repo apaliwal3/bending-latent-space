@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import csv
+import hashlib
 from itertools import product
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ import config
 from data import generate_data, load_data, save_data, split_points
 from evaluate import evaluate
 from model import build_model
-from plot import plot_decoder_surface, plot_history, plot_iwll, plot_points
+from plot import plot_curvature_history, plot_decoder_surface, plot_factor_slices, plot_history, plot_iwll, plot_points
 from train import train
 
 
@@ -57,14 +58,27 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
     model.load_state_dict(best["model"])
     metrics, per_point = evaluate(model, split_points(data, "test"),
                                   device=settings["training"]["device"], **settings["evaluation"])
+    is_product = hasattr(model, "curvatures")
+    scalar_curvature = float(model.curvature.detach()) if hasattr(model, "curvature") else 0.
+    factor_dims = list(getattr(model, "factor_dims", (model.latent_dim,)))
     result = {
         "dataset": settings["data"]["name"], "noise_std": settings["data"]["noise_std"],
         "latent_dim": settings["model"]["latent_dim"], "decoder_width": settings["model"]["decoder_width"],
         "seed": settings["training"]["seed"], "model_type": type(model).__name__,
-        "curvature": float(model.curvature.detach()) if hasattr(model, "curvature") else 0.0,
-        "initial_curvature": settings["model"].get("curvature", 0.0),
-        "learn_curvature": settings["model"].get("learn_curvature", False),
+        "model_variant": settings["model"].get("type", "flat"),
+        "curvature": None if is_product else scalar_curvature,
+        "initial_curvature": None if is_product else settings["model"].get("curvature", 0.),
+        "factor_dims": factor_dims,
+        "factor_types": list(getattr(model, "factor_types", (
+            "h" if settings["model"].get("type") == "curved" else
+            "u" if settings["model"].get("type") == "universal" else "e",))),
+        "curvatures": model.curvatures.detach().cpu().tolist() if is_product else [scalar_curvature],
+        "initial_curvatures": (list(model.initial_curvatures) if is_product else
+                               [settings["model"].get("curvature", 0.)]),
+        "curvature_stage": model.curvature_stage if is_product else None,
+        "learn_curvature": getattr(model, "learn_curvature", False),
         "best_epoch": best["epoch"], "n_parameters": sum(p.numel() for p in model.parameters()),
+        "n_trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
         **metrics,
     }
     save_json(output_dir / "results.json", result)
@@ -76,6 +90,9 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
     plot_points(data["points"], output_dir / "data.png")
     plot_points(split_points(data, "test"), output_dir / "point_clouds.png", generated)
     plot_history(history, output_dir / "loss.png")
+    if is_product:
+        plot_curvature_history(history, factor_dims, output_dir / "curvatures.png")
+        plot_factor_slices(model, output_dir / "factor_slices.png")
     if model.latent_dim == 2:
         plot_decoder_surface(model, output_dir / "decoder_surface.png", color_volume=color_volume)
     method = metrics["likelihood_method"]
@@ -85,10 +102,11 @@ def run_experiment(settings: dict, output_dir: Path, color_volume: bool = False)
 
 def summarize(results: list[dict], output_dir: Path) -> list[dict]:
     keys = ("model_type", "initial_curvature", "learn_curvature", "dataset", "noise_std",
-            "latent_dim", "decoder_width", "likelihood_method", "likelihood_checked")
+            "latent_dim", "decoder_width", "likelihood_method", "likelihood_checked",
+            "model_variant", "factor_dims", "factor_types", "initial_curvatures", "curvature_stage")
     groups = {}
     for result in results:
-        key = tuple(result[name] for name in keys)
+        key = tuple(tuple(result[name]) if isinstance(result[name], list) else result[name] for name in keys)
         groups.setdefault(key, []).append(result)
     summary = []
     for key, rows in groups.items():
@@ -97,8 +115,14 @@ def summarize(results: list[dict], output_dir: Path) -> list[dict]:
         for metric in ("log_likelihood", "iwll", "elbo", "reconstruction_mse", "reconstruction_nll", "kl", "curvature"):
             values = [result[metric] for result in rows]
             row[f"{metric}_values"] = values
-            row[f"{metric}_mean"] = float(np.mean(values))
-            row[f"{metric}_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else None
+            row[f"{metric}_mean"] = float(np.mean(values)) if values[0] is not None else None
+            row[f"{metric}_std"] = (float(np.std(values, ddof=1))
+                                     if len(values) > 1 and values[0] is not None else None)
+        for metric in ("curvatures", "factor_kl"):
+            values = np.asarray([result[metric] for result in rows])
+            row[f"{metric}_values"] = values.tolist()
+            row[f"{metric}_mean"] = values.mean(axis=0).tolist()
+            row[f"{metric}_std"] = values.std(axis=0, ddof=1).tolist() if len(rows) > 1 else None
         summary.append(row)
     save_json(output_dir / "summary.json", summary)
     with (output_dir / "results.csv").open("w", newline="") as handle:
@@ -121,6 +145,23 @@ def main():
             model_settings.update(config.CURVED_MODEL)
         elif model_type == "universal":
             model_settings.update(config.UNIVERSAL_MODEL)
+        elif model_type in ("mixed", "paper_universal"):
+            from mixed import partition_dimensions
+            model_settings.update(config.MIXED_MODEL if model_type == "mixed" else config.PAPER_UNIVERSAL_MODEL)
+            dims = model_settings.get("factor_dims")
+            model_settings["factor_dims"] = list(dims if dims is not None else partition_dimensions(latent_dim))
+            types = model_settings.get("factor_types")
+            model_settings["factor_types"] = list(types if types is not None else
+                (["u"] * len(model_settings["factor_dims"]) if model_type == "paper_universal" else
+                 ["hse"[i % 3] for i in range(len(model_settings["factor_dims"]))]))
+            if model_settings.get("curvatures") is None:
+                model_settings["curvatures"] = [-1. if k == "h" else 1. if k == "s" else 0.
+                                                 for k in model_settings["factor_types"]]
+            if model_type == "paper_universal":
+                transition = (model_settings.get("curvature_warmup_epochs", 50) +
+                              model_settings.get("curvature_stabilization_epochs", 5))
+                if config.TRAINING["epochs"] <= transition:
+                    raise ValueError("Universal run must extend past curvature warmup and stabilization.")
         settings = {
             "data": {**config.DATA, "name": dataset, "noise_std": noise,
                      "parameters": config.SURFACES[dataset]},
@@ -130,7 +171,13 @@ def main():
         }
         name = f"{dataset}_noise{noise:g}_z{latent_dim}_width{width}_seed{seed}"
         # Retain existing flat experiment paths/checkpoints.
-        if model_type != "flat":
+        if model_type in ("mixed", "paper_universal"):
+            signature = "_".join(f"{k}{d}" for k, d in zip(model_settings["factor_types"], model_settings["factor_dims"]))
+            digest = hashlib.sha256(json.dumps(model_settings, sort_keys=True).encode()).hexdigest()[:10]
+            name = f"{model_type}_{signature}_{digest}_{name}"
+        elif model_type == "paper_flat":
+            name = f"paper_flat_{name}"
+        elif model_type != "flat":
             name = f"{model_type}_k{model_settings['curvature']:g}_{name}"
             if model_settings.get("learn_curvature", False):
                 name = f"learned_{name}"

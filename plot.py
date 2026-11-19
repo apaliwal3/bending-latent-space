@@ -48,6 +48,41 @@ def plot_history(history: list[dict], path: str | Path):
     finish(fig, path)
 
 
+def plot_curvature_history(history, factor_dims, path):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for i, dimension in enumerate(factor_dims):
+        ax.plot([r["epoch"] for r in history], [r["curvatures"][i] for r in history],
+                label=f"Factor {i + 1} ({dimension}D)")
+    for previous, current in zip(history, history[1:]):
+        if previous.get("curvature_stage") != current.get("curvature_stage"):
+            ax.axvline(current["epoch"], color="gray", linestyle=":", linewidth=1)
+    ax.axhline(0, color="black", linewidth=.6)
+    ax.set(xlabel="Epoch", ylabel="Factor sectional curvature")
+    ax.legend()
+    finish(fig, path)
+
+
+@torch.no_grad()
+def plot_factor_slices(model, path, resolution=25):
+    """Vary two tangent directions in one factor, holding other factors at zero."""
+    parameter = next(model.parameters())
+    axis = torch.linspace(-1.5, 1.5, resolution, device=parameter.device, dtype=parameter.dtype)
+    a, b = torch.meshgrid(axis, axis, indexing="ij")
+    visible = [(i, sum(model.factor_dims[:i]), d) for i, d in enumerate(model.factor_dims) if d >= 2]
+    if not visible:
+        return
+    fig = plt.figure(figsize=(5 * len(visible), 4))
+    for panel, (index, offset, dimension) in enumerate(visible, 1):
+        grid = torch.zeros(resolution**2, model.latent_dim, device=parameter.device, dtype=parameter.dtype)
+        grid[:, offset], grid[:, offset + 1] = a.flatten(), b.flatten()
+        points = model.observation(model.latent_from_tangent(grid)).mean.cpu().numpy().reshape(resolution, resolution, 3)
+        ax = fig.add_subplot(1, len(visible), panel, projection="3d")
+        ax.plot_surface(*points.transpose(2, 0, 1), cmap="viridis")
+        ax.set(xlabel="x", ylabel="y", zlabel="z",
+               title=f"Factor {index + 1}: {dimension}D, K={float(model.curvatures[index]):.3g}")
+    finish(fig, path)
+
+
 def plot_iwll(groups: list[dict], path: str | Path):
     """Likelihood comparison; mark estimates that have no integration check."""
     panels = sorted({(row["dataset"], row["noise_std"]) for row in groups})
@@ -56,18 +91,24 @@ def plot_iwll(groups: list[dict], path: str | Path):
     fig, axes = plt.subplots(len(panels), 1, figsize=(8, 4 * len(panels)), squeeze=False)
     for ax, (dataset, noise) in zip(axes[:, 0], panels):
         subset = [row for row in groups if row["dataset"] == dataset and row["noise_std"] == noise]
-        variants = sorted({(row["model_type"], row["initial_curvature"], row["learn_curvature"], row["decoder_width"])
-                           for row in subset})
-        for model_type, curvature, learned, width in variants:
-            rows = sorted((row for row in subset if (row["model_type"], row["initial_curvature"],
-                                                     row["learn_curvature"], row["decoder_width"])
-                           == (model_type, curvature, learned, width)),
+        def variant(row):
+            return (row.get("model_variant", row["model_type"]),
+                    tuple(row.get("initial_curvatures", [row["initial_curvature"]])),
+                    row["learn_curvature"], row["decoder_width"],
+                    tuple(zip(row.get("factor_types", []), row.get("factor_dims", []))))
+        variants = sorted({variant(row) for row in subset})
+        for model_type, curvatures, learned, width, signature in variants:
+            rows = sorted((row for row in subset if variant(row)
+                           == (model_type, curvatures, learned, width, signature)),
                           key=lambda row: row["latent_dim"])
             x = [row["latent_dim"] for row in rows]
             metric = "log_likelihood" if all("log_likelihood_mean" in row for row in rows) else "iwll"
             y = [row[f"{metric}_mean"] for row in rows]
             std = [np.nan if row[f"{metric}_std"] is None else row[f"{metric}_std"] for row in rows]
-            label = f"learned K (initial {curvature:g})" if learned else f"K={curvature:g}"
+            curvature_label = ", ".join(f"{k:g}" for k in curvatures)
+            label = f"learned K (initial {curvature_label})" if learned else f"K={curvature_label}"
+            if len(signature) > 1:
+                label += ", " + " x ".join(f"{k}{d}" for k, d in signature)
             line, = ax.plot(x, y, "-", label=f"{model_type}, {label}, width {width}")
             ax.errorbar(x, y, yerr=std, fmt="none", color=line.get_color(), capsize=3)
             for row in rows:
